@@ -7,9 +7,6 @@
 - substitute in a non-live version of the live editor from opt-live.js
   in addition to the janky current version of the editor
 
-- the 'hide attributes' link on objects don't work; also, while i'm at
-  it, maybe i can keep those changes persistent over time? err or not :/
-
 */
 
 
@@ -36,7 +33,7 @@ require('./lib/jquery.jsPlumb-1.3.10-all-min.js'); // DO NOT UPGRADE ABOVE 1.3.1
 require('./lib/jquery-ui-1.11.4/jquery-ui.js');
 require('./lib/jquery-ui-1.11.4/jquery-ui.css');
 require('./lib/jquery.ba-bbq.js'); // contains slight pgbovine modifications
-require('../css/pytutor.css');
+require('../css/pytutor');
 
 
 // for TypeScript
@@ -62,6 +59,29 @@ export var lightArrowColor = '#c9e6ca';
 var heapPtrSrcRE = /__heap_pointer_src_/;
 var rightwardNudgeHack = true; // suggested by John DeNero, toggle with global
 
+// returns a list of length a.length * b.length with elements from both
+// mixed. the elements of a and b should be primitives, but if the first element
+// is a list, it flattens it. e.g.,:
+//   multiplyLists([1, 2, 3], [4, 5]) -> [[1,4], [1,5], [2,4], [2,5], [3,4], [3,5]]
+function multiplyLists(a, b) {
+  var ret = [];
+  for (var i = 0; i < a.length; i++) {
+    for (var j = 0; j < b.length; j++) {
+      var elt = a[i];
+      // flatten list
+      if ($.isArray(elt)) {
+        ret.push(elt.concat(b[j]));
+      } else {
+        ret.push([elt, b[j]]);
+      }
+    }
+  }
+  return ret;
+}
+
+var newlineAllRegex = new RegExp('\n', 'g');
+var doubleQuoteAllRegex = new RegExp('\"', 'g');
+var tabAllRegex = new RegExp("\t", 'g');
 
 // the main event!
 export class ExecutionVisualizer {
@@ -69,6 +89,36 @@ export class ExecutionVisualizer {
 
   static DEFAULT_EMBEDDED_CODE_DIV_WIDTH = 350;
   static DEFAULT_EMBEDDED_CODE_DIV_HEIGHT = 400;
+
+  // always nest values of these types within objects to make the
+  // visualization look cleaner:
+  // - functions should be nested within heap objects since that's a more
+  //   intuitive rendering for methods (i.e., functions within objects)
+  // - lots of special cases for function/property-like python types that we should inline
+  static DEFAULT_ALWAYS_NEST_TYPES = ['FUNCTION', 'JS_FUNCTION',
+                                      'property', 'classmethod', 'staticmethod', 'builtin_function_or_method',
+                                      'member_descriptor', 'getset_descriptor', 'method_descriptor', 'wrapper_descriptor'];
+
+  objInAlwaysNestTypes(obj) {
+    if (!obj) return false;
+    assert($.isArray(obj));
+    if (this.params.alwaysNestTypes.indexOf(obj[0]) >= 0) {
+      // is the type name in alwaysNestTypes?
+      return true;
+    } else if (obj.length >= 2 &&
+               (obj[0] == 'INSTANCE' || obj[0] == 'INSTANCE_PPRINT') &&
+               (this.params.alwaysNestTypes.indexOf(obj[1]) >= 0)) {
+      // otherwise is this an INSTANCE with the type name (obj[1]) in alwaysNestTypes?
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  // should this object be nested within another one?
+  shouldNestObject(obj) {
+    return (!this.params.disableHeapNesting || this.objInAlwaysNestTypes(obj));
+  }
 
   params: any = {};
   curInputCode: string;
@@ -140,8 +190,10 @@ export class ExecutionVisualizer {
   //   editCodeBaseURL - the base URL to visit when the user clicks 'Edit code' (if null, then 'Edit code' link hidden)
   //   embeddedMode         - shortcut for codeDivWidth=DEFAULT_EMBEDDED_CODE_DIV_WIDTH,
   //                                       codeDivHeight=DEFAULT_EMBEDDED_CODE_DIV_HEIGHT
-  //                          (and don't activate keyboard shortcuts!)
+  //                          (and hide a bunch of other stuff & don't activate keyboard shortcuts!)
   //   disableHeapNesting   - if true, then render all heap objects at the top level (i.e., no nested objects)
+  //   alwaysNestTypes      - if non-null, a list of type names to ALWAYS nest within heap objects
+  //                          (supersedes disableHeapNesting, defaults to DEFAULT_ALWAYS_NEST_TYPES)
   //   drawParentPointers   - if true, then draw environment diagram parent pointers for all frames
   //                          WARNING: there are hard-to-debug MEMORY LEAKS associated with activating this option
   //   textualMemoryLabels  - render references using textual memory labels rather than as jsPlumb arrows.
@@ -166,6 +218,7 @@ export class ExecutionVisualizer {
   //          and to display the proper language in langDisplayDiv:
   //          'py2' for Python 2, 'py3' for Python 3, 'js' for JavaScript, 'java' for Java,
   //          'ts' for TypeScript, 'ruby' for Ruby, 'c' for C, 'cpp' for C++
+  //          'py3anaconda' for Python 3 with Anaconda
   //          [default is Python-style labels]
   constructor(domRootID, dat, params) {
     this.curInputCode = dat.code.rtrim(); // kill trailing spaces
@@ -211,6 +264,11 @@ export class ExecutionVisualizer {
     this.params.drawParentPointers = (this.params.drawParentPointers === true);
     this.params.textualMemoryLabels = (this.params.textualMemoryLabels === true);
     this.params.showAllFrameLabels = (this.params.showAllFrameLabels === true);
+
+    if (this.params.alwaysNestTypes === undefined) {
+      this.params.alwaysNestTypes = ExecutionVisualizer.DEFAULT_ALWAYS_NEST_TYPES;
+    }
+    assert($.isArray(this.params.alwaysNestTypes));
 
     // insert ExecutionVisualizer into domRootID in the DOM
     var tmpRoot = $('#' + domRootID);
@@ -384,8 +442,11 @@ export class ExecutionVisualizer {
 
       // add an extra label to link back to the main site, so that viewers
       // on the embedded page know that they're seeing an OPT visualization
-      base.append('<div style="font-size: 8pt; margin-bottom: 20px;">Visualized using <a href="http://pythontutor.com" target="_blank" style="color: #3D58A2;">Online Python Tutor</a> by <a href="http://www.pgbovine.net/" target="_blank" style="color: #3D58A2;">Philip Guo</a></div>');
+      base.append('<div style="font-size: 8pt; margin-bottom: 10px;"><a href="http://pythontutor.com" target="_blank" style="color: #3D58A2;">Python Tutor</a> by <a href="https://twitter.com/pgbovine" target="_blank" style="color: #3D58A2;">Philip Guo</a>. Support with a <a href="http://pgbovine.net/support.htm" target="_blank">small donation</a>.</div>');
       base.find('#codeFooterDocs').hide(); // cut out extraneous docs
+    } else {
+      // also display credits:
+      base.append('<div style="font-size: 9pt; margin-top: 5px; margin-bottom: 10px;">Created by <a href="https://twitter.com/pgbovine" target="_blank">@pgbovine</a>. Support with a <a href="http://pgbovine.net/support.htm" target="_blank">small donation</a>.</div>');
     }
 
     // not enough room for these extra buttons ...
@@ -476,6 +537,7 @@ export class ExecutionVisualizer {
     }
 
     this.updateOutput();
+    this.redrawConnectors(); // do this at the end
     this.hasRendered = true;
     this.try_hook("end_render", {myViz:this});
   }
@@ -1003,28 +1065,31 @@ export class ExecutionVisualizer {
       if (prevIsReturn) {
         var idx = myViz.curInstr - 1;
         var retStack = myViz.curTrace[idx].stack_to_render;
-        assert(retStack.length > 0);
-        var retFrameId = retStack[retStack.length - 1].frame_id;
+        // retStack.length == 0 in rare cases such as inside of an
+        // exec() statement. #weird
+        if (retStack.length > 0) {
+          var retFrameId = retStack[retStack.length - 1].frame_id;
 
-        // now go backwards until we find a 'call' to this frame
-        while (idx >= 0) {
-          var entry = myViz.curTrace[idx];
-          if (entry.event == 'call' && entry.stack_to_render) {
-            var topFrame = entry.stack_to_render[entry.stack_to_render.length - 1];
-            if (topFrame.frame_id == retFrameId) {
-              break; // DONE, we found the call that corresponds to this return
+          // now go backwards until we find a 'call' to this frame
+          while (idx >= 0) {
+            var entry = myViz.curTrace[idx];
+            if (entry.event == 'call' && entry.stack_to_render) {
+              var topFrame = entry.stack_to_render[entry.stack_to_render.length - 1];
+              if (topFrame.frame_id == retFrameId) {
+                break; // DONE, we found the call that corresponds to this return
+              }
             }
+            idx--;
           }
-          idx--;
-        }
 
-        // now idx is the index of the 'call' entry. we need to find the
-        // entry before that, which is the instruction before the call.
-        // THAT's the line of the call site.
-        if (idx > 0) {
-          var callingEntry = myViz.curTrace[idx - 1];
-          prevLineNumber = callingEntry.line; // WOOHOO!!!
-          prevIsReturn = false; // this is now a call site, not a return
+          // now idx is the index of the 'call' entry. we need to find the
+          // entry before that, which is the instruction before the call.
+          // THAT's the line of the call site.
+          if (idx > 0) {
+            var callingEntry = myViz.curTrace[idx - 1];
+            prevLineNumber = callingEntry.line; // WOOHOO!!!
+            prevIsReturn = false; // this is now a call site, not a return
+          }
         }
       }
     }
@@ -1094,24 +1159,24 @@ class DataVisualizer {
     this.domRoot = domRoot;
     this.domRootD3 = domRootD3;
 
-    var codeVizHTML =
-      '<div id="dataViz">\
-         <table id="stackHeapTable">\
-           <tr>\
-             <td id="stack_td">\
-               <div id="globals_area">\
-                 <div id="stackHeader">Frames</div>\
-               </div>\
-               <div id="stack"></div>\
-             </td>\
-             <td id="heap_td">\
-               <div id="heap">\
-                 <div id="heapHeader">Objects</div>\
-               </div>\
-             </td>\
-           </tr>\
-         </table>\
-       </div>';
+    var codeVizHTML = `
+      <div id="dataViz">
+         <table id="stackHeapTable">
+           <tr>
+             <td id="stack_td">
+               <div id="globals_area">
+                 <div id="stackHeader">${this.getRealLabel("Frames")}</div>
+               </div>
+               <div id="stack"></div>
+             </td>
+             <td id="heap_td">
+               <div id="heap">
+                 <div id="heapHeader">${this.getRealLabel("Objects")}</div>
+               </div>
+             </td>
+           </tr>
+         </table>
+       </div>`;
 
     this.domRoot.append(codeVizHTML);
 
@@ -1152,6 +1217,7 @@ class DataVisualizer {
     return this.owner.generateID('heap_object_' + objID + '_s' + stepNum);
   }
 
+  // customize labels for each language's preferred vocabulary
   getRealLabel(label) {
     if (this.params.lang === 'js' || this.params.lang === 'ts' || this.params.lang === 'ruby') {
       if (label === 'list') {
@@ -1190,6 +1256,14 @@ class DataVisualizer {
         return 'true';
       } else if (label === 'False') {
         return 'false';
+      }
+    } else if (this.params.lang === 'c' || this.params.lang === 'cpp') {
+      if (label === 'Global frame') {
+        return 'Global variables';
+      } else if (label === 'Frames') {
+        return 'Stack';
+      } else if (label === 'Objects') {
+        return 'Heap';
       }
     }
 
@@ -1305,8 +1379,8 @@ class DataVisualizer {
       }
 
       function recurseIntoObject(id, curRow, newRow) {
-        // heuristic for laying out 1-D linked data structures: check for enclosing elements that are
-        // structurally identical and then lay them out as siblings in the same "row"
+        // heuristic for laying out 1-D linked data structures: check for enclosing elements
+        // that are structurallyEquivalent() and then lay them out as siblings in the same "row"
         var heapObj = curEntry.heap[id];
 
         if (myViz.isCppMode()) {
@@ -1325,18 +1399,11 @@ class DataVisualizer {
 
             if (!myViz.isPrimitiveType(child)) {
               var childID = getRefID(child);
-
-              // comment this out to make "linked lists" that aren't
-              // structurally equivalent look good, e.g.,:
-              //   x = (1, 2, (3, 4, 5, 6, (7, 8, 9, None)))
-              //if (myViz.structurallyEquivalent(heapObj, curEntry.heap[childID])) {
-              //  updateCurLayout(childID, curRow, newRow);
-              //}
-              if (myViz.params.disableHeapNesting) {
-                updateCurLayout(childID, [], []);
-              }
-              else {
+              if (myViz.structurallyEquivalent(heapObj, curEntry.heap[childID])) {
                 updateCurLayout(childID, curRow, newRow);
+              }
+              else if (!myViz.owner.shouldNestObject(curEntry.heap[childID])) {
+                updateCurLayout(childID, [], []);
               }
             }
           });
@@ -1345,10 +1412,10 @@ class DataVisualizer {
           $.each(heapObj, function(ind, child) {
             if (ind < 1) return; // skip type tag
 
-            if (myViz.params.disableHeapNesting) {
-              var dictKey = child[0];
-              if (!myViz.isPrimitiveType(dictKey)) {
-                var keyChildID = getRefID(dictKey);
+            var dictKey = child[0];
+            if (!myViz.isPrimitiveType(dictKey)) {
+              var keyChildID = getRefID(dictKey);
+              if (!myViz.owner.shouldNestObject(curEntry.heap[keyChildID])) {
                 updateCurLayout(keyChildID, [], []);
               }
             }
@@ -1359,21 +1426,21 @@ class DataVisualizer {
               if (myViz.structurallyEquivalent(heapObj, curEntry.heap[childID])) {
                 updateCurLayout(childID, curRow, newRow);
               }
-              else if (myViz.params.disableHeapNesting) {
+              else if (!myViz.owner.shouldNestObject(curEntry.heap[childID])) {
                 updateCurLayout(childID, [], []);
               }
             }
           });
         }
-        else if (heapObj[0] == 'INSTANCE' || heapObj[0] == 'CLASS') {
+        else if (heapObj[0] == 'INSTANCE' || heapObj[0] == 'INSTANCE_PPRINT' || heapObj[0] == 'CLASS') {
           jQuery.each(heapObj, function(ind, child) {
             var headerLength = (heapObj[0] == 'INSTANCE') ? 2 : 3;
             if (ind < headerLength) return;
 
-            if (myViz.params.disableHeapNesting) {
-              var instKey = child[0];
-              if (!myViz.isPrimitiveType(instKey)) {
-                var keyChildID = getRefID(instKey);
+            var instKey = child[0];
+            if (!myViz.isPrimitiveType(instKey)) {
+              var keyChildID = getRefID(instKey);
+              if (!myViz.owner.shouldNestObject(curEntry.heap[keyChildID])) {
                 updateCurLayout(keyChildID, [], []);
               }
             }
@@ -1384,13 +1451,44 @@ class DataVisualizer {
               if (myViz.structurallyEquivalent(heapObj, curEntry.heap[childID])) {
                 updateCurLayout(childID, curRow, newRow);
               }
-              else if (myViz.params.disableHeapNesting) {
+              else if (!myViz.owner.shouldNestObject(curEntry.heap[childID])) {
                 updateCurLayout(childID, [], []);
               }
             }
           });
         }
-        else if ((heapObj[0] == 'C_ARRAY') || (heapObj[0] == 'C_STRUCT')) {
+        else if (heapObj[0] == 'FUNCTION' || heapObj[0] == 'JS_FUNCTION') {
+          // a Python function object has an optional element at index=3
+          // (zero-indexed) that represents default arg names/values
+          //
+          // a JavaScript function object has funcProperties that we should
+          // recurse into in order to precompute their layouts
+          var funcProperties = null;
+          // traverse into default argument values to precompute their
+          // layouts, if applicable
+          if (heapObj[0] == 'FUNCTION' && heapObj.length > 3) {
+            funcProperties = heapObj[3];
+          }
+          if (heapObj[0] == 'JS_FUNCTION') {
+            assert(heapObj.length == 5);
+            funcProperties = heapObj[3];
+          }
+
+          if (funcProperties) {
+            assert(funcProperties.length > 0);
+            $.each(funcProperties, function(ind, kvPair) {
+              // copy/paste from INSTANCE/CLASS code above
+              var instVal = kvPair[1];
+              if (!myViz.isPrimitiveType(instVal)) {
+                var childID = getRefID(instVal);
+                if (!myViz.owner.shouldNestObject(curEntry.heap[childID])) {
+                  updateCurLayout(childID, [], []);
+                }
+              }
+            });
+          }
+        }
+        else if ((heapObj[0] == 'C_ARRAY') || (heapObj[0] == 'C_MULTIDIMENSIONAL_ARRAY') || (heapObj[0] == 'C_STRUCT')) {
           updateCurLayoutAndRecurse(heapObj);
         }
       }
@@ -1512,12 +1610,12 @@ class DataVisualizer {
       function recurseIntoCStructArray(val) {
         if (val[0] === 'C_ARRAY') {
           $.each(val, function(ind, elt) {
-            if (ind < 2) return;
+            if (ind < 2) return; // these have 2 header fields
             updateCurLayoutAndRecurse(elt);
           });
-        } else if (val[0] === 'C_STRUCT') {
+        } else if (val[0] === 'C_MULTIDIMENSIONAL_ARRAY' || val[0] === 'C_STRUCT') {
           $.each(val, function(ind, kvPair) {
-            if (ind < 3) return;
+            if (ind < 3) return; // these have 3 header fields
             updateCurLayoutAndRecurse(kvPair[1]);
           });
         }
@@ -1609,9 +1707,12 @@ class DataVisualizer {
       var startingInd = -1;
 
       if (obj1[0] == 'DICT') {
-        startingInd = 2;
+        startingInd = 1;
       }
       else if (obj1[0] == 'INSTANCE') {
+        startingInd = 2;
+      }
+      else if (obj1[0] == 'INSTANCE_PPRINT') {
         startingInd = 3;
       }
       else {
@@ -1645,8 +1746,9 @@ class DataVisualizer {
     }
 
     if (typeof obj == "object") {
-      // kludge: only 'SPECIAL_FLOAT' objects count as primitives
-      return (obj[0] == 'SPECIAL_FLOAT' || obj[0] == 'JS_SPECIAL_VAL' ||
+      // kludgy
+      return (obj[0] == 'IMPORTED_FAUX_PRIMITIVE' ||
+              obj[0] == 'SPECIAL_FLOAT' || obj[0] == 'JS_SPECIAL_VAL' ||
               obj[0] == 'C_DATA' /* TODO: is this right?!? */);
     }
     else {
@@ -1739,7 +1841,7 @@ class DataVisualizer {
     // not really using d3 to the fullest, but oh wells!
     myViz.domRoot.find('#heap')
       .empty()
-      .html('<div id="heapHeader">Objects</div>');
+      .html(`<div id="heapHeader">${myViz.getRealLabel("Objects")}</div>`);
 
 
     var heapRows = myViz.domRootD3.select('#heap')
@@ -1917,7 +2019,7 @@ class DataVisualizer {
           if (myViz.isPrimitiveType(val)) {
             myViz.renderPrimitiveObject(val, curInstr, $(this));
           }
-          else if (val[0] === 'C_STRUCT' || val[0] === 'C_ARRAY') {
+          else if (val[0] === 'C_STRUCT' || val[0] === 'C_ARRAY' || val[0] === 'C_MULTIDIMENSIONAL_ARRAY') {
             // C structs and arrays can be inlined in frames
             myViz.renderCStructArray(val, curInstr, $(this));
           }
@@ -2058,8 +2160,7 @@ class DataVisualizer {
 
         // pretty-print lambdas and display other weird characters
         // (might contain '<' or '>' for weird names like <genexpr>)
-        var funcName = htmlspecialchars(frame.func_name).replace('&lt;lambda&gt;', '\u03bb')
-              .replace('\n', '<br/>');
+        var funcName = htmlspecialchars(frame.func_name).replace('&lt;lambda&gt;', '\u03bb');
 
         var headerLabel = funcName;
 
@@ -2150,7 +2251,7 @@ class DataVisualizer {
           if (myViz.isPrimitiveType(val)) {
             myViz.renderPrimitiveObject(val, curInstr, $(this));
           }
-          else if (val[0] === 'C_STRUCT' || val[0] === 'C_ARRAY') {
+          else if (val[0] === 'C_STRUCT' || val[0] === 'C_ARRAY' || val[0] === 'C_MULTIDIMENSIONAL_ARRAY') {
             // C structs and arrays can be inlined in frames
             myViz.renderCStructArray(val, curInstr, $(this));
           }
@@ -2490,9 +2591,7 @@ class DataVisualizer {
       var literalStr = htmlspecialchars(obj);
 
       // print as a double-quoted string literal
-      // with explicit newlines as <br/>
-      literalStr = literalStr.replace(new RegExp('\n', 'g'), '<br/>'); // replace ALL
-      literalStr = literalStr.replace(new RegExp('\"', 'g'), '\\"'); // replace ALL
+      literalStr = literalStr.replace(doubleQuoteAllRegex, '\\"'); // replace ALL
       literalStr = '"' + literalStr + '"';
 
       d3DomElement.append('<span class="stringObj">' + literalStr + '</span>');
@@ -2543,9 +2642,16 @@ class DataVisualizer {
           // make it really narrow so that the div doesn't STRETCH too wide
           d3DomElement.append('<div style="width: 10px;" id="' + ptrSrcId + '" class="cdataElt">&nbsp;' + debugInfo + '</div>');
 
-          assert(!myViz.jsPlumbManager.connectionEndpointIDs.has(ptrSrcId));
-          myViz.jsPlumbManager.connectionEndpointIDs.set(ptrSrcId, ptrTargetId);
-          //console.log(ptrSrcId, '->', ptrTargetId);
+          // special case: display 0x0 address as a NULL pointer value,
+          // to distinguish it from all other pointers, since sometimes
+          // C/C++ programmers *explicitly* set a pointer to null
+          if (ptrVal === '0x0') {
+            $('#' + ptrSrcId).html('<span class="cdataUninit">NULL</span>');
+          } else {
+            //console.log(ptrSrcId, '->', ptrTargetId);
+            assert(!myViz.jsPlumbManager.connectionEndpointIDs.has(ptrSrcId));
+            myViz.jsPlumbManager.connectionEndpointIDs.set(ptrSrcId, ptrTargetId);
+          }
         } else {
           // for non-pointers, put cdataId on the element itself, so that
           // pointers can point directly at the element, not the header
@@ -2561,12 +2667,18 @@ class DataVisualizer {
               rep = '\uD83D\uDC80'; // skull emoji
             } else {
               // a regular string
-              literalStr = literalStr.replace(new RegExp("\n", 'g'), '\\n'); // replace ALL
-              literalStr = literalStr.replace(new RegExp("\t", 'g'), '\\t'); // replace ALL
-              literalStr = literalStr.replace(new RegExp('\"', 'g'), '\\"'); // replace ALL
+              literalStr = literalStr.replace(newlineAllRegex, '\\n'); // replace ALL
+              literalStr = literalStr.replace(tabAllRegex, '\\t'); // replace ALL
+              literalStr = literalStr.replace(doubleQuoteAllRegex, '\\"'); // replace ALL
 
-              // print as a SINGLE-quoted string literal (to emulate C-style chars)
-              literalStr = "'" + literalStr + "'";
+              // unprintable chars are denoted with '???', so show them as
+              // a special unicode character:
+              if (typeName === 'char' && literalStr === '???') {
+                literalStr = '\uFFFD'; // question mark in black diamond unicode character
+              } else {
+                // print as a SINGLE-quoted string literal (to emulate C-style chars)
+                literalStr = "'" + literalStr + "'";
+              }
               rep = htmlspecialchars(literalStr);
             }
           } else {
@@ -2575,6 +2687,12 @@ class DataVisualizer {
 
           d3DomElement.append('<div id="' + cdataId + '" class="cdataElt">' + rep + '</div>');
         }
+      } else if (obj[0] == 'IMPORTED_FAUX_PRIMITIVE') {
+        // these represent objects that you've imported from external
+        // libraries/modules, which should be displayed as 'primitives'
+        // so that we don't clutter up the display by dedicating heap
+        // space for them or trying to recurse into viewing their insides
+        d3DomElement.append('<span class="importedObj">' + obj[1] + '</span>');
       } else {
         assert(obj[0] == 'SPECIAL_FLOAT' || obj[0] == 'JS_SPECIAL_VAL');
         d3DomElement.append('<span class="numberObj">' + obj[1] + '</span>');
@@ -2594,7 +2712,7 @@ class DataVisualizer {
         // obj is a ["REF", <int>] so dereference the 'pointer' to render that object
         this.renderCompoundObject(getRefID(obj), stepNum, d3DomElement, false);
       } else {
-        assert(obj[0] === 'C_STRUCT' || obj[0] === 'C_ARRAY');
+        assert(obj[0] === 'C_STRUCT' || obj[0] === 'C_ARRAY' || obj[0] === 'C_MULTIDIMENSIONAL_ARRAY');
         this.renderCStructArray(obj, stepNum, d3DomElement);
       }
     }
@@ -2745,22 +2863,25 @@ class DataVisualizer {
         }
       }
     }
-    else if (obj[0] == 'INSTANCE' || obj[0] == 'CLASS') {
+    else if (obj[0] == 'INSTANCE' || obj[0] == 'INSTANCE_PPRINT' || obj[0] == 'CLASS') {
       var isInstance = (obj[0] == 'INSTANCE');
+      var isPprintInstance = (obj[0] == 'INSTANCE_PPRINT');
       var headerLength = isInstance ? 2 : 3;
 
       assert(obj.length >= headerLength);
 
       if (isInstance) {
         d3DomElement.append('<div class="typeLabel">' + typeLabelPrefix + obj[1] + ' ' + myViz.getRealLabel('instance') + '</div>');
-      }
-      else {
+      } else if (isPprintInstance) {
+        d3DomElement.append('<div class="typeLabel">' + typeLabelPrefix + obj[1] + ' ' + myViz.getRealLabel('instance') + '</div>');
+        d3DomElement.append('<table class="customObjTbl"><tr><td class="customObjElt">' + htmlspecialchars(obj[2]) + '</td></tr></table>');
+      } else {
         var superclassStr = '';
         if (obj[2].length > 0) {
           superclassStr += ('[extends ' + obj[2].join(', ') + '] ');
         }
         d3DomElement.append('<div class="typeLabel">' + typeLabelPrefix + obj[1] + ' class ' + superclassStr +
-                            '<br/>' + '<a href="#" id="attrToggleLink">hide attributes</a>' + '</div>');
+                            '<br/>' + '<a href="javascript:void(0)" id="attrToggleLink">hide attributes</a>' + '</div>');
       }
 
       // right now, let's NOT display class members, since that clutters
@@ -2773,7 +2894,7 @@ class DataVisualizer {
         var lab = isInstance ? 'inst' : 'class';
         d3DomElement.append('<table class="' + lab + 'Tbl"></table>');
 
-        var tbl = d3DomElement.children('table');
+        var tbl = d3DomElement.children('table:last'); // tricky, there's more than 1 table if isPprintInstance is true
 
         $.each(obj, function(ind, kvPair) {
           if (ind < headerLength) return; // skip header tags
@@ -2806,46 +2927,35 @@ class DataVisualizer {
       // from imported modules and custom types created from, say,
       // collections.namedtuple
       if (!isInstance) {
-        // super kludgy! use a global selector $ to get at the DOM
-        // element, which should be okay since IDs should be globally
-        // unique on a page, even with multiple ExecutionVisualizer
-        // instances ... but still feels dirty to me since it violates
-        // my "no using raw $(__) selectors for jQuery" convention :/
-        $(d3DomElement.selector + ' .typeLabel #attrToggleLink').click(function() {
-          var elt = $(d3DomElement.selector + ' .classTbl');
+        var className = obj[1];
+        d3DomElement.find('.typeLabel #attrToggleLink').click(function() {
+          var elt = d3DomElement.find('.classTbl');
           elt.toggle();
           $(this).html((elt.is(':visible') ? 'hide' : 'show') + ' attributes');
 
           if (elt.is(':visible')) {
-            myViz.classAttrsHidden[d3DomElement.selector] = false;
+            myViz.classAttrsHidden[className] = false;
             $(this).html('hide attributes');
           }
           else {
-            myViz.classAttrsHidden[d3DomElement.selector] = true;
+            myViz.classAttrsHidden[className] = true;
             $(this).html('show attributes');
           }
 
           myViz.redrawConnectors(); // redraw all arrows!
-
-          return false; // so that the <a href="#"> doesn't reload the page
+          return false; // don't reload the page
         });
 
         // "remember" whether this was hidden earlier during this
         // visualization session
-        if (myViz.classAttrsHidden[d3DomElement.selector]) {
-          $(d3DomElement.selector + ' .classTbl').hide();
-          $(d3DomElement.selector + ' .typeLabel #attrToggleLink').html('show attributes');
+        if (myViz.classAttrsHidden[className]) {
+          d3DomElement.find('.classTbl').hide();
+          d3DomElement.find('.typeLabel #attrToggleLink').html('show attributes');
         }
       }
     }
-    else if (obj[0] == 'INSTANCE_PPRINT') {
-      d3DomElement.append('<div class="typeLabel">' + typeLabelPrefix + obj[1] + ' instance</div>');
-
-      strRepr = htmlspecialchars(obj[2]); // escape strings!
-      d3DomElement.append('<table class="customObjTbl"><tr><td class="customObjElt">' + strRepr + '</td></tr></table>');
-    }
     else if (obj[0] == 'FUNCTION') {
-      assert(obj.length == 3);
+      assert(obj.length == 3 || obj.length == 4);
 
       // pretty-print lambdas and display other weird characters:
       var funcName = htmlspecialchars(obj[1]).replace('&lt;lambda&gt;', '\u03bb');
@@ -2865,6 +2975,23 @@ class DataVisualizer {
       }
       else {
         d3DomElement.append('<div class="funcObj">' + funcPrefix + ' ' + funcName + '</div>');
+      }
+
+      // render default argument names/values (see ../pg_encoder.py)
+      if (obj.length > 3) {
+        var funcProperties = obj[3];
+        assert(funcProperties.length > 0);
+        d3DomElement.append('<div class="typeLabel" style="margin-top: 3px;">default arguments:</div>');
+        d3DomElement.append('<table class="instTbl"></table>');
+        var tbl = d3DomElement.children('table');
+        $.each(funcProperties, function(ind, kvPair) {
+          tbl.append('<tr class="instEntry"><td class="instKey"></td><td class="instVal"></td></tr>');
+          var newRow = tbl.find('tr:last');
+          var keyTd = newRow.find('td:first');
+          var valTd = newRow.find('td:last');
+          keyTd.append('<span class="keyObj">' + htmlspecialchars(kvPair[0]) + '</span>');
+          myViz.renderNestedObject(kvPair[1], stepNum, valTd);
+        });
       }
     }
     else if (obj[0] == 'JS_FUNCTION') { /* TODO: refactor me */
@@ -2916,7 +3043,7 @@ class DataVisualizer {
       d3DomElement.find('div.heapPrimitive').append('<div class="typeLabel">' + typeLabelPrefix + typeName + '</div>');
       myViz.renderPrimitiveObject(primitiveVal, stepNum, d3DomElement.find('div.heapPrimitive'));
     }
-    else if (obj[0] == 'C_STRUCT' || obj[0] == 'C_ARRAY') {
+    else if (obj[0] == 'C_STRUCT' || obj[0] == 'C_ARRAY' || obj[0] === 'C_MULTIDIMENSIONAL_ARRAY') {
       myViz.renderCStructArray(obj, stepNum, d3DomElement);
     }
     else {
@@ -2975,7 +3102,73 @@ class DataVisualizer {
           myViz.renderNestedObject(kvPair[1], stepNum, valTd);
         });
       }
-    } else {
+    } else if (obj[0] == 'C_MULTIDIMENSIONAL_ARRAY') {
+      // since we can display only 2 dimensions sensibly, make the first
+      // dimension into rows and flatten all other dimensions together into
+      // columns. in the common case for a 2-D array, this will do the
+      // perfect thing: first dimension is rows, second dimension is columns.
+      // e.g., for a 4-D array, the first dimension is rows, and dimensions
+      // 2, 3, and 4 are flattened together into columns. we can't do
+      // any better than this since it doesn't make sense to display
+      // more than 2 dimensions at once on screen
+      assert(obj.length >= 3);
+      var addr = obj[1];
+      var dimensions = obj[2];
+      assert(dimensions.length > 1); // make sure we're really multidimensional!
+
+      var leader = '';
+      d3DomElement.append('<div class="typeLabel">' + leader + 'array</div>');
+      d3DomElement.append('<table class="cArrayTbl"></table>');
+      var tbl = d3DomElement.children('table');
+
+      // a list of array indices for each dimension
+      var indicesByDimension = [];
+      for (var d = 0; d < dimensions.length; d++) {
+        indicesByDimension.push(d3.range(dimensions[d]));
+      }
+
+      // common case is 2-D:
+      var allDimensions = multiplyLists(indicesByDimension[0], indicesByDimension[1]);
+      // for all dimensions above the second one ...
+      for (var d = 2; d < dimensions.length; d++) {
+        allDimensions = multiplyLists(allDimensions, indicesByDimension[d]);
+      }
+      //console.log('allDimensions', JSON.stringify(allDimensions));
+
+      // ignore dimensions[0], which is rows
+      var numColumns = 1;
+      for (var i=1; i < dimensions.length; i++) {
+        numColumns *= dimensions[i];
+      }
+
+      for (var row=0; row < dimensions[0]; row++) {
+        //console.log('row', row);
+
+        // a pair of rows for header + content, respectively
+        tbl.append('<tr></tr>');
+        var headerTr = tbl.find('tr:last');
+        tbl.append('<tr></tr>');
+        var contentTr = tbl.find('tr:last');
+
+        for (var col=0; col < numColumns; col++) {
+          var flattenedInd = (row*numColumns) + col; // the real index into the 1-D flattened array stored in obj[3:]
+          var realInd = flattenedInd + 3; // skip 3 header fields to get to the real index in obj
+          var val = obj[realInd];
+
+          var indToDisplay = allDimensions[flattenedInd].join(',');
+          //console.log('  col', col, '| flattenedInd:', flattenedInd, indToDisplay, 'contents:', val);
+
+          // add a new column and then pass in that newly-added column
+          // as d3DomElement to the recursive call to child:
+          headerTr.append('<td class="cMultidimArrayHeader"></td>');
+          headerTr.find('td:last').append(indToDisplay);
+
+          contentTr.append('<td class="cMultidimArrayElt"></td>');
+          myViz.renderNestedObject(val, stepNum, contentTr.find('td:last'));
+        }
+      }
+    }
+    else {
       assert(obj[0] == 'C_ARRAY');
       assert(obj.length >= 2);
       var addr = obj[1];
@@ -3044,7 +3237,7 @@ class ProgramOutputBox {
     var stdoutHeight = '75px';
     // heuristic for code with really small outputs
     if (this.numStdoutLines <= 3) {
-      stdoutHeight = (18 * this.numStdoutLines) + 'px';
+      stdoutHeight = (25 * this.numStdoutLines) + 'px';
     }
     if (heightOverride) {
       stdoutHeight = heightOverride;
@@ -3098,18 +3291,28 @@ class CodeDisplay {
     this.domRootD3 = domRootD3;
     this.codToDisplay = codToDisplay;
 
+    // 2018-03-15 - removed "Live programming" link from
+    // visualization mode to simplify the UI, even if it drives
+    // fewer people to live programming mode; they can always click
+    // the "Live Programming Mode" button in the code editor:
+    //<span id="liveModeSpan" style="display: none;">| <a id="editLiveModeBtn" href="#">Live programming</a></a>\
+    //
+    // also changed 'Edit code' link to 'Edit this code' to make
+    // it more clear to users
     var codeDisplayHTML =
       '<div id="codeDisplayDiv">\
          <div id="langDisplayDiv"></div>\
          <div id="pyCodeOutputDiv"/>\
-         <div id="editCodeLinkDiv"><a id="editBtn">Edit code</a>\
-         <span id="liveModeSpan" style="display: none;">| <a id="editLiveModeBtn" href="#">Live programming</a></a>\
+         <div id="editCodeLinkDiv"><a id="editBtn">Edit this code</a>\
          </div>\
          <div id="legendDiv"/>\
-         <div id="codeFooterDocs"><font color="#e93f34">NEW!</font> Click on a line of code to set a breakpoint. Then use the Forward and Back buttons to jump there.</div>\
+         <div id="codeFooterDocs">Click a line of code to set a breakpoint; use the Back and Forward buttons to jump there.</div>\
        </div>';
 
     this.domRoot.append(codeDisplayHTML);
+    if (this.owner.params.embeddedMode) {
+      this.domRoot.find('#editCodeLinkDiv').css('font-size', '10pt');
+    }
     this.domRoot.find('#legendDiv')
         .append('<svg id="prevLegendArrowSVG"/> line that has just executed')
         .append('<p style="margin-top: 4px"><svg id="curLegendArrowSVG"/> next line to execute</p>');
@@ -3133,6 +3336,8 @@ class CodeDisplay {
         pyVer = 'java';
       } else if (lang === 'py3') {
         pyVer = '3';
+      } else if (lang === 'py3anaconda') {
+        pyVer = 'py3anaconda';
       } else if (lang === 'c') {
         pyVer = 'c';
       } else if (lang === 'cpp') {
@@ -3162,11 +3367,21 @@ class CodeDisplay {
       } else if (lang === 'py2') {
         this.domRoot.find('#langDisplayDiv').html('Python 2.7');
       } else if (lang === 'py3') {
-        this.domRoot.find('#langDisplayDiv').html('Python 3.3');
+        this.domRoot.find('#langDisplayDiv').html('Python 3.6');
+      } else if (lang === 'py3anaconda') {
+        this.domRoot.find('#langDisplayDiv').html('Python 3.6 with <a target="_blank" href="https://docs.anaconda.com/anaconda/">Anaconda 5.2</a> <font color="#e93f34">EXPERIMENTAL!</font><br/>(much slower than <a target="_blank" href="visualize.html#py=3">regular Python 3.6</a>, but lets you import more modules)');
       } else if (lang === 'c') {
-        this.domRoot.find('#langDisplayDiv').html('C (gcc 4.8, C11) <font color="#e93f34">EXPERIMENTAL!</font><br/>see <a href="https://github.com/pgbovine/opt-cpp-backend/issues" target="_blank">known bugs</a> and report to philip@pgbovine.net');
+        if (this.owner.params.embeddedMode) {
+          this.domRoot.find('#langDisplayDiv').html('C (gcc 4.8, C11)');
+        } else {
+          this.domRoot.find('#langDisplayDiv').html('C (gcc 4.8, C11)<br/><font color="#e93f34">EXPERIMENTAL!</font> <a href="https://github.com/pgbovine/OnlinePythonTutor/blob/master/unsupported-features.md" target="_blank">known bugs/limitations</a>');
+        }
       } else if (lang === 'cpp') {
-        this.domRoot.find('#langDisplayDiv').html('C++ (gcc 4.8, C++11) <font color="#e93f34">EXPERIMENTAL!</font><br/>see <a href="https://github.com/pgbovine/opt-cpp-backend/issues" target="_blank">known bugs</a> and report to philip@pgbovine.net');
+        if (this.owner.params.embeddedMode) {
+          this.domRoot.find('#langDisplayDiv').html('C++ (gcc 4.8, C++11)');
+        } else {
+          this.domRoot.find('#langDisplayDiv').html('C++ (gcc 4.8, C++11)<br/><font color="#e93f34">EXPERIMENTAL!</font> <a href="https://github.com/pgbovine/OnlinePythonTutor/blob/master/unsupported-features.md" target="_blank">known bugs/limitations</a>');
+        }
       } else {
         this.domRoot.find('#langDisplayDiv').hide();
       }
@@ -3397,6 +3612,10 @@ class CodeDisplay {
     // returns True iff lineNo is visible in pyCodeOutputDiv
     var isOutputLineVisible = (lineNo) => {
       var lineNoTd = this.domRoot.find('#lineNo' + lineNo);
+      // if we can't even find this lineNo div, then punt!
+      if (!lineNoTd || lineNoTd.length /* jQuery selector returns a list */ === 0) {
+        return false;
+      }
       var LO = lineNoTd.offset().top;
 
       var PO = pcod.offset().top;
@@ -3410,6 +3629,10 @@ class CodeDisplay {
     // smoothly scroll pyCodeOutputDiv so that the given line is at the center
     var scrollCodeOutputToLine = (lineNo) => {
       var lineNoTd = this.domRoot.find('#lineNo' + lineNo);
+      // if we can't even find this lineNo div, then punt!
+      if (!lineNoTd || lineNoTd.length /* jQuery selector returns a list */ === 0) {
+        return false;
+      }
       var LO = lineNoTd.offset().top;
 
       var PO = pcod.offset().top;
@@ -3569,7 +3792,8 @@ class NavigationController {
 
   showError(msg: string) {
     if (msg) {
-      this.domRoot.find("#errorOutput").html(htmlspecialchars(msg)).show();
+      this.domRoot.find("#errorOutput").html(htmlspecialchars(msg) + `
+      <span style="font-size: 9pt; color: #666">(see <a href="https://github.com/pgbovine/OnlinePythonTutor/blob/master/unsupported-features.md" target="_blank">unsupported features</a>)</span>`).show();
     } else {
       this.domRoot.find("#errorOutput").hide();
     }
@@ -3605,6 +3829,9 @@ export function htmlspecialchars(str) {
 
     // replace tab as four spaces:
     str = str.replace(/\t/g, "&nbsp;&nbsp;&nbsp;&nbsp;");
+
+    // replace newline as <br/>
+    str = str.replace(newlineAllRegex, '<br/>');
   }
   return str;
 }
@@ -3639,6 +3866,7 @@ function htmlsanitize(str) {
 // and '.' seems to be illegal.
 //
 // also '=', '!', and '?' are common in Ruby names, so escape those as well
+// '$' sometimes found in JavaScript names, so escape as well
 //
 // also spaces are illegal, so convert to '_'
 // TODO: what other characters are illegal???
@@ -3654,6 +3882,7 @@ function varnameToCssID(varname) {
                 .replace(/[:]/g, '_COLON_')
                 .replace(/[=]/g, '_EQ_')
                 .replace(/[.]/g, '_DOT_')
+                .replace(/[$]/g, '_DOLLAR_')
                 .replace(/ /g, '_');
 }
 

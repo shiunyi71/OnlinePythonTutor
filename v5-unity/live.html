@@ -16,7 +16,7 @@
   <!-- let Webpack take care of everything. Use the [hash] feature to
        create unique filenames for releases:
        https://webpack.github.io/docs/long-term-caching.html -->
-  <script type="text/javascript" src="build/opt-live.bundle.js?9e05a8f2ec" charset="utf-8"></script>
+  <script type="text/javascript" src="build/opt-live.bundle.js?e0ac3d7c38" charset="utf-8"></script>
 
 <!-- insert google-analytics.txt contents here -->
 
@@ -26,9 +26,10 @@
 
   <div id="liveModeHeader">
 
-  This is the <b>live programming mode</b> of Python Tutor, which
-  continually runs and visualizes your code as you type. It is highly
-  <b>experimental</b> and does not yet support all of the languages and
+  This is the live programming mode (<a href="https://www.youtube.com/watch?v=JjGt95Te0wo" target="_blank">video intro</a>), which
+  continually runs and visualizes your code as you type. It's
+  <span style="font-weight: bold; color: #e93f34;">highly experimental</span>
+  and does not yet support all languages and
   features of the <a href="visualize.html" target="_blank">regular
   Python Tutor visualizer</a>.
 
@@ -43,6 +44,13 @@
 
   </div>
 
+<table id="experimentalHeader">
+<tr>
+<td valign="top" id="headerTdLeft"></td>
+<td valign="top" id="headerTdRight"></td>
+</tr>
+</table>
+
   <table>
     <tr>
       <td valign="top">
@@ -50,12 +58,13 @@
           <div id="codeInputWarnings">Write code in
             <select id="pythonVersionSelector">
               <option value="2">Python 2.7</option>
-              <option value="3">Python 3.3</option>
+              <option value="3" selected>Python 3.6</option>
               <option value="js">JavaScript ES6</option>
             </select>
 
-            <span style="color: #888; font-size: 8pt; float: right;">(drag lower right corner to resize code editor)</span>
+            <span id="liveModeExtraWarning" style="color: #888; font-size: 8pt; float: right;">(drag lower right corner to resize code editor)</span>
           </div>
+          <div id="someoneIsTypingDiv" style="color: #e93f34; font-weight: bold; display: none;">Someone is typing ...</div>
 
           <div id="codeInputPane"></div>
           <div id="legendDiv"></div>
@@ -80,6 +89,7 @@
 
           <div id="frontendErrorOutput"></div>
         </div>
+        <div id="eurekaSurveyPane"></div>
       </td>
       <td valign="top">
         <div id="pyOutputPane"/>
@@ -89,16 +99,15 @@
 
 <div id="footer">
 
-<!--<p>Visualizer options:</p>-->
-
-<div id="optionsPane" style="margin-top: 10px; padding-bottom: 15px; line-height: 150%;">
+<div id="optionsPane">
   <select id="cumulativeModeSelector">
     <option value="false">hide exited frames [default]</option>
     <option value="true">show exited frames (Python)</option>
     <!-- <option value="holistic">holistic mode (experimental)</option> -->
   </select>
   <select id="heapPrimitivesSelector">
-    <option value="false">inline primitives &amp; nested objects [default]</option>
+    <option value="false">inline primitives and try to nest objects</option>
+    <option value="nevernest" selected>inline primitives but don't nest objects [default]</option>
     <option value="true">render all objects on the heap (Python)</option>
   </select>
   <select id="textualMemoryLabelsSelector">
@@ -110,34 +119,26 @@
 <p>
   <button id="genUrlBtn" class="smallBtn" type="button">Generate permanent link</button> <input type="text" id="urlOutput" size="70"/>
 </p>
+<p>
+  <button id="genUrlShortenedBtn" class="smallBtn" type="button">Generate shortened link</button> <input type="text" id="urlOutputShortened" size="25"/>
+</p>
+
 
 <p>Click the button above to create a permanent link to your
-visualization. To report a bug, paste the link along with a brief error
+visualization (<a href="https://www.youtube.com/watch?v=h4q3UKdEFKE" target="_blank">video demo</a>). To report a bug, paste the link along with a brief error
 description in an email addressed to philip@pgbovine.net</p>
 
 <p style="margin-top: 35px;">
 This live programming mode of
 <a href="http://pythontutor.com/">Python Tutor</a> (<a href="https://github.com/pgbovine/OnlinePythonTutor">code on GitHub</a>) supports three
-languages: Python <a href="http://www.python.org/doc/2.7/">2.7</a> and <a
-href="http://www.python.org/doc/3.3.0/">3.3</a> with limited module
-imports and no file I/O, and
+languages: Python <a href="https://docs.python.org/2.7/">2.7</a> and <a
+href="https://docs.python.org/3.6/">3.6</a> with limited module
+imports, and
 JavaScript running in Node.js v6.0.0 with limited support for ES6.
 
 Try the regular
 <a href="http://pythontutor.com/visualize.html">Python Tutor</a>
 visualizer for additional language support.</p>
-
-<p style="margin-top: 30px;">Privacy Policy: By using Online Python
-Tutor, your visualized code, options, user interactions, text chats, and
-IP address are logged on our server and may be analyzed for research
-purposes. Nearly all Web services collect this basic information from
-users. However, the Online Python Tutor website (pythontutor.com) does
-not collect any personal information or session state from users, nor
-does it issue any cookies.</p>
-
-<p style="margin-top: 25px;">
-Copyright &copy; <a href="http://www.pgbovine.net/">Philip Guo</a>.  All rights reserved.
-</p>
 
 </div>
 
