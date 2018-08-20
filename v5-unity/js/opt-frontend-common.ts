@@ -92,6 +92,7 @@ export abstract class AbstractBaseFrontend {
                 'http://cokapi.com/';   // try cokapi.com so that hopefully it works through firewalls better than directly using IP addr
 
   backupHttpServerRoot = 'http://45.33.41.179/'; // this is my backup server in case the primary is too busy
+  // TODO: add more backup servers and randomly load-balance as necessary in the future
 
   // see ../../v4-cokapi/cokapi.js for details
   langSettingToJsonpEndpoint = {
@@ -442,12 +443,12 @@ export abstract class AbstractBaseFrontend {
       if (jsonp_endpoint) {
         assert (pyState !== '2' && pyState !== '3');
 
-        // 2018-08-12: issue an error message for non-python code
-        this.setFronendError(
-                        ["Error: non-Python code is *not* working right now due to server problems.",
-                         "We are working on a fix now. Please do not email us about this issue."]);
-        this.doneExecutingCode();
-        return;
+        // 2018-08-19: this is an uncommon use case (only used for https iframe embedding)
+        if (jsonp_endpoint.indexOf('https:') == 0) {
+            this.setFronendError(["Error: https execution of non-Python code is not currently supported. [#nonPythonHttps]"]);
+            this.doneExecutingCode();
+            return;
+        }
 
         var retryOnBackupServer = () => {
           // first log a #TryBackup error entry:
